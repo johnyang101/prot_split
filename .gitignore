@@ -15,6 +15,7 @@ multirun/
 **/*.out
 **/*.txt
 !openfold/resources/stereo_chemical_props.txt
+!README.txt
 **/.ipynb_checkpoints/
 **._*
 **/*.egg-info
