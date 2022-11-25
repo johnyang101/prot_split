@@ -2,8 +2,8 @@ data/**
 !data/toy_esm_embeddings/S6CDL6_9ACTN-62-159.pt
 !data/2_class.csv
 gvpdir/
-google_prot_fns/
-ls-main/
+# google_prot_fns/
+# ls-main/
 .vscode/
 outputs/
 wandb/
