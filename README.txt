@@ -10,4 +10,6 @@ https://github.com/YujiaBao/ls
 3. Install jupyterlab.
 4. cd into prot_split/esm and run pip install -e .
 
+TODO: Add ls and esm to a setup.py
+
 This should be all you need. 
