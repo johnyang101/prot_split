@@ -11,7 +11,7 @@ from pathlib import Path
 
 import torch
 
-import esm
+import esmdir.esm as esm
 from esm.model.esm2 import ESM2
 
 
@@ -83,7 +83,7 @@ def has_emb_layer_norm_before(model_state):
 
 
 def _load_model_and_alphabet_core_v1(model_data):
-    import esm  # since esm.inverse_folding is imported below, you actually have to re-import esm here
+    import esmdir.esm as esm  # since esm.inverse_folding is imported below, you actually have to re-import esm here
 
     alphabet = esm.Alphabet.from_architecture(model_data["args"].arch)
 
@@ -126,7 +126,7 @@ def _load_model_and_alphabet_core_v1(model_data):
         model_type = esm.MSATransformer
 
     elif "invariant_gvp" in model_data["args"].arch:
-        import esm.inverse_folding
+        import esmdir.esm as esm.inverse_folding
 
         model_type = esm.inverse_folding.gvp_transformer.GVPTransformerModel
         model_args = vars(model_data["args"])  # convert Namespace -> dict

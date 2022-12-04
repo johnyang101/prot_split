@@ -258,7 +258,7 @@ After pip install, you can load and use a pretrained model as follows:
 
 ```python
 import torch
-import esm
+import esmdir.esm as esmdir.esm as esmdir.esm as esm
 
 # Load ESM-2 model
 model, alphabet = esm.pretrained.esm2_t33_650M_UR50D()

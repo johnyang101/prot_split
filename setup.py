@@ -5,10 +5,10 @@ setup(
     name="prot_split",
     packages=[
         'utils',
-        'esmdir',
+        # 'esmdir',
     ],
     package_dir={
         'utils': './utils',
-        'esmdir': './esmdir',
+        # 'esmdir': './esmdir',
     },
 )

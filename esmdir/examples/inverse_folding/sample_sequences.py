@@ -12,7 +12,7 @@ import argparse
 import numpy as np
 from pathlib import Path
 
-import esm
+import esmdir.esm as esm
 import esm.inverse_folding
 
 
