@@ -6,50 +6,23 @@ import torch
 import torch.nn as nn
 import os
 import torch.nn.functional as F
-
-# %%
-dataset_folder = "../google_prot_fns/"
-filters = 64
-epochs = 60
-batch_size = 128
-protein_len = 200
-
-# %%
-toy_dataset = pd.read_csv('/Mounts/rbg-storage1/users/johnyang/prot_split/data/2_class.csv')
-classes = pd.unique(toy_dataset['family_accession'])
-
-# %%
-'''
-Get 10 random proteins from each class
-'''
-minimal_dataset = toy_dataset.groupby('family_accession').apply(lambda x: x.sample(10))
-minimal_dataset = minimal_dataset.reset_index(drop=True)
-
-# %%
-len(classes) #Should be 2
-
-# %%
-# from utils.gpu_utils import *
-
-# %%
-# chosen_gpu = get_free_gpu()
-device = 'cuda'
-
-# %%
-# esm_model, alphabet = torch.hub.load("facebookresearch/esm:main", "esm2_t33_650M_UR50D") #Downloads cache to AFS. Limited space on AFS...
-# batch_converter = alphabet.get_batch_converter()
-# esm_model.to(device)
-# esm_model.eval()
-# print('done')
-
-# %%
-device = 'cuda'
+import ls # Yujia Bao Learning to Split
+from ls.models.build import ModelFactory
+import itertools
+import os
+from typing import Sequence, Tuple, List, Union
+import pickle
+import re
+import shutil
+import torch
+import pathlib
 
 # %%
 class ESMFnDataset(torch.utils.data.Dataset):
-    def __init__(self, dataset, classes, device='cuda', max_len=200):
+    def __init__(self, dataset, classes, data_path, device='cuda', max_len=200):
         self.dataset = dataset
         self.classes = classes
+        self.data_path = data_path
         self.max_len = max_len
         self.device = device
         self.class_to_idx = {classes[i]: i for i in range(len(classes))}
@@ -67,44 +40,10 @@ class ESMFnDataset(torch.utils.data.Dataset):
         row = self.dataset.iloc[idx]
         sequence_name = row['sequence_name']
         sequence_name = sequence_name.replace('/', '-')
-        embeddings = torch.load(f'/Mounts/rbg-storage1/users/johnyang/prot_split/data/toy_esm_embeddings/{sequence_name}.pt')
-        embeddings = torch.tensor(embeddings, device='cuda', dtype=torch.float32)
-
-        '''Pad embeddings to max_len with zero vector'''
-        if embeddings.size(1) < self.max_len:
-            B, N, h = embeddings.size()
-            pad = torch.zeros((B, self.max_len - embeddings.shape[1], h), device=self.device)
-            embeddings = torch.cat((embeddings, pad), dim=1)
-
-        class_idx = torch.tensor(self.class_to_idx[row['family_accession']])
-        # label = F.one_hot(class_idx, num_classes=len(self.classes))
-        embeddings = embeddings.squeeze(0) #NOTE: LS adds its own batch dimension, so we need to remove it here
-        return embeddings, class_idx
-
-class ESMFnMLPDataset(torch.utils.data.Dataset):
-    def __init__(self, dataset, classes, device='cuda', max_len=200):
-        self.dataset = dataset
-        self.classes = classes
-        self.max_len = max_len
-        self.device = device
-        self.class_to_idx = {classes[i]: i for i in range(len(classes))}
-        self.idx_to_class = {i: classes[i] for i in range(len(classes))}
-        self.letter_to_num = {'C': 4, 'D': 3, 'S': 15, 'Q': 5, 'K': 11, 'I': 9,
-                'P': 14, 'T': 16, 'F': 13, 'A': 0, 'G': 7, 'H': 8,
-                'E': 6, 'L': 10, 'R': 1, 'W': 17, 'V': 19, 
-                'N': 2, 'Y': 18, 'M': 12}
-        self.num_to_letter = {v:k for k, v in self.letter_to_num.items()}
         
-    def __len__(self):
-        return len(self.dataset)
-    
-    def __getitem__(self, idx):
-        row = self.dataset.iloc[idx]
-        sequence_name = row['sequence_name']
-        sequence_name = sequence_name.replace('/', '-')
-        embeddings = torch.load(f'/Mounts/rbg-storage1/users/johnyang/prot_split/data/toy_esm_embeddings/{sequence_name}.pt')
-        embeddings = torch.tensor(embeddings, device='cuda', dtype=torch.float32)
-
+        embeddings = torch.load(f'{self.data_path}/{sequence_name}.pt')
+        embeddings = embeddings['representations'][33].to('cuda').float() # ESM Embedding output format, 33 is last layer of 
+        # embeddings = torch.tensor(embeddings, device='cuda', dtype=torch.float32)
         '''Pad embeddings to max_len with zero vector'''
         if embeddings.size(1) < self.max_len:
             B, N, h = embeddings.size()
@@ -114,28 +53,7 @@ class ESMFnMLPDataset(torch.utils.data.Dataset):
         class_idx = torch.tensor(self.class_to_idx[row['family_accession']])
         # label = F.one_hot(class_idx, num_classes=len(self.classes))
         embeddings = embeddings.squeeze(0) #NOTE: LS adds its own batch dimension, so we need to remove it here
-        embeddings = embeddings.flatten()
         return embeddings, class_idx
-
-# %%
-dataset = ESMFnDataset(minimal_dataset, classes, device)
-mlp_dataset = ESMFnMLPDataset(minimal_dataset, classes, device)
-
-
-# %% [markdown]
-# # Learning to Split
-
-# %%
-import ls
-
-# %%
-# python scripts/extract.py esm2_t33_650M_UR50D examples/data/some_proteins.fasta \
-#   examples/data/some_proteins_emb_esm2 --repr_layers 33 --include per_tok
-
-# %%
-from ls.models.build import ModelFactory
-
-
 # %%
 @ModelFactory.register("esm_transformer")
 class TransformerEncoder(torch.nn.Module):
@@ -159,7 +77,6 @@ class TransformerEncoder(torch.nn.Module):
         if len(embedding.size()) > 3 and embedding.size(0) == 1:
             embedding = embedding.squeeze(0)
             assert len(embedding.size()) == 3, 'Embedding has greater than 4 dimensions'
-            
         B, N, h = embedding.shape
         hidden = self.transformer_encoder(embedding)
         hidden = self.fc1(hidden)
@@ -174,60 +91,160 @@ class TransformerEncoder(torch.nn.Module):
         hidden = self.output_fc(hidden)
         return hidden
 
-# %%
-@ModelFactory.register("esm_mlp")
-class LinearLayer(torch.nn.Module):
-    
-    def __init__(self, include_label: int, input_size=1280, device='cuda', classes=2, max_len=202, **kwargs):
-        super(LinearLayer, self).__init__()
-        self.input_size = input_size
-        self.classes = classes
-        self.fc1 = torch.nn.Linear(self.input_size, 32)
-        self.relu1 = torch.nn.ReLU()
-        self.fc2 = torch.nn.Linear(32 * max_len, self.classes)
-        self.softmax = torch.nn.Softmax(dim=-1)
-        self.device = device
-        
-    def forward(self, embedding):
-        if len(embedding.size()) > 3 and embedding.size(0) == 1:
-            embedding = embedding.squeeze(0)
-            assert len(embedding.size()) == 3, 'Embedding has greater than 4 dimensions'
+RawMSA = Sequence[Tuple[str, str]]
+class FastaBatchedDataset(object):
+    def __init__(self, sequence_labels, sequence_strs):
+        self.sequence_labels = list(sequence_labels)
+        self.sequence_strs = list(sequence_strs)
+    @classmethod
+    def from_file(cls, fasta_file):
+        sequence_labels, sequence_strs = [], []
+        cur_seq_label = None
+        buf = []
+        def _flush_current_seq():
+            nonlocal cur_seq_label, buf
+            if cur_seq_label is None:
+                return
+            sequence_labels.append(cur_seq_label)
+            sequence_strs.append("".join(buf))
+            cur_seq_label = None
+            buf = []
+        with open(fasta_file, "r") as infile:
+            for line_idx, line in enumerate(infile):
+                if line.startswith(">"):  # label line
+                    _flush_current_seq()
+                    line = line[1:].strip()
+                    if len(line) > 0:
+                        cur_seq_label = line
+                    else:
+                        cur_seq_label = f"seqnum{line_idx:09d}"
+                else:  # sequence line
+                    buf.append(line.strip())
+        _flush_current_seq()
+        assert len(set(sequence_labels)) == len(
+            sequence_labels
+        ), "Found duplicate sequence labels"
+        return cls(sequence_labels, sequence_strs)
+    def __len__(self):
+        return len(self.sequence_labels)
+    def __getitem__(self, idx):
+        return self.sequence_labels[idx], self.sequence_strs[idx]
+    def get_batch_indices(self, toks_per_batch, extra_toks_per_seq=0):
+        sizes = [(len(s), i) for i, s in enumerate(self.sequence_strs)]
+        sizes.sort()
+        batches = []
+        buf = []
+        max_len = 0
+        def _flush_current_buf():
+            nonlocal max_len, buf
+            if len(buf) == 0:
+                return
+            batches.append(buf)
+            buf = []
+            max_len = 0
+        for sz, i in sizes:
+            sz += extra_toks_per_seq
+            if max(sz, max_len) * (len(buf) + 1) > toks_per_batch:
+                _flush_current_buf()
+            max_len = max(max_len, sz)
+            buf.append(i)
+        _flush_current_buf()
+        return batches
+
+def get_data(fasta_file):
+    esm_model, alphabet = torch.hub.load("facebookresearch/esm:main", "esm2_t33_650M_UR50D")
+    batch_converter = alphabet.get_batch_converter()
+    esm_model.to('cuda')
+    esm_model.eval()
+    model = esm_model
+    model.eval()
+
+    toks_per_batch = 10000
+    output_dir = '../data/results'
+    output_file = 'run1'
+
+    model = model.cuda()
+    print("Transferred model to GPU")
+
+    dataset = FastaBatchedDataset.from_file('./selected_fams.fasta')
+    batches = dataset.get_batch_indices(toks_per_batch, extra_toks_per_seq=1)
+    data_loader = torch.utils.data.DataLoader(
+        dataset, collate_fn=alphabet.get_batch_converter(), batch_sampler=batches
+    )
+    print(f"Read {fasta_file} with {len(dataset)} sequences")
+
+    output_dir = pathlib.Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return_contacts = False
+
+    assert all(-(model.num_layers + 1) <= i <= model.num_layers for i in [33]) #[33] is the last layer of the thing
+    repr_layers = [(i + model.num_layers + 1) % (model.num_layers + 1) for i in [33]]
+
+    with torch.no_grad():
+        for batch_idx, (labels, strs, toks) in enumerate(data_loader):
+            print(
+                f"Processing {batch_idx + 1} of {len(batches)} batches ({toks.size(0)} sequences)"
+            )
+            if torch.cuda.is_available():
+                toks = toks.to(device="cuda", non_blocking=True)
+
+            out = model(toks, repr_layers=repr_layers, return_contacts=return_contacts)
+
+            logits = out["logits"].to(device="cpu")
+            representations = {
+                layer: t.to(device="cpu") for layer, t in out["representations"].items()
+            }
             
-        B, N, h = embedding.shape
-        # hidden = self.fc1(hidden)
-        # hidden = self.fc2(hidden)
-        '''Flatten hidden state'''
-        hidden = self.fc1(embedding)
-        hidden = self.relu1(hidden)
-        hidden = hidden.view(B, -1)
-        hidden = self.fc2(hidden)
-        # hidden = self.softmax(hidden)
-        return hidden
+            if return_contacts:
+                contacts = out["contacts"].to(device="cpu")
 
-# %%
-# %%
-# data = ls.datasets.Tox21()
+            for i, label in enumerate(labels):
+                output_file = output_dir / f"{label}.pt"
+                output_file.parent.mkdir(parents=True, exist_ok=True)
+                # assert os.path.is_dir(args.output_dir), f"Output directory {args.output_dir} does not exist"
+                result = {"label": label}
+                truncate_len = min(200, len(strs[i])) #TODO: Make that better, should be protien_len
+                # Call clone on tensors to ensure tensors are not views into a larger representation
+                # See https://github.com/pytorch/pytorch/issues/1995
+                
+                if (1): # "per_tok" in args.include:
+                    result["representations"] = {
+                        layer: t[i, 1 : truncate_len + 1].clone()
+                        for layer, t in representations.items()
+                    }
+                torch.save(
+                    result,
+                    output_file,
+                )
+            del toks
+            torch.cuda.empty_cache()
 
-# # Learning to split the Tox21 dataset.
-# # Here we use a simple mlp as our model backbone and use roc_auc as the evaluation metric.
-# train_data, test_data, train_indices, test_indices, splitter = ls.learning_to_split(data, model={'name': 'mlp'}, metric='roc_auc', return_order=['train_data', 'test_data', 'train_indices', 'test_indices', 'splitter'], num_outer_loop=1)
+def return_from_dataset(dataset, classes):
+  return [dataset.loc[dataset['family_accession'].isin(classes)].reset_index(), classes]
 
-# %%
-# data.__getitem__(0)
+if __name__ == "__main__":
+    dataset_folder = "../data/results"
+    protein_len = 200
+    # get_data('selected_fams.fasta')
+    toy_dataset = pd.read_csv('../data/2_class.csv')
+    classes = pd.unique(toy_dataset['family_accession'])
 
-# %%
-# type(data)
+    full_data_temp = []
+    for name_sub_folder in ["train", "dev", "test"]:
+        for f in os.listdir(os.path.join("../google_prot_fns/", name_sub_folder)):
+            data = pd.read_csv(os.path.join("../google_prot_fns/", name_sub_folder, f))
+            full_data_temp.append(data)
+        full_data_temp.append(pd.concat(full_data_temp))
+    all_datasets = pd.concat([full_data_temp[0], full_data_temp[1], full_data_temp[2]])
+    del full_data_temp
 
-# %%
-dataset.__getitem__(0)[0].shape
+    sel_fams = np.load('../data/selected_fams.npy') 
+    sel_dataset, _ = return_from_dataset(all_datasets, sel_fams)
+    device = 'cuda'
 
-# %%
-# train_data, test_data, train_indices, test_indices, splitter = ls.learning_to_split(mlp_dataset, model={'name': 'mlp', 'args': {'hidden_dim_list': [1280 * 202, 256, 32]}}, 
-#                                                                                     metric='accuracy', num_workers=0,
-#                                                                                     return_order=['train_data', 'test_data', 'train_indices', 'test_indices', 'splitter'],
-#                                                                                     batch_size=20, patience=1, num_outer_loop=2)
-
-train_data, test_data, train_indices, test_indices, splitter = ls.learning_to_split(dataset, model={'name': 'esm_transformer', 'args': {'nheads': 1, 'num_layers': 2,}}, 
-                                                                                    metric='accuracy', num_workers=0,
-                                                                                    return_order=['train_data', 'test_data', 'train_indices', 'test_indices', 'splitter'],
-                                                                                    batch_size=20, patience=1, num_outer_loop=2)
+    dataset = ESMFnDataset(sel_dataset, sel_fams, dataset_folder, device = device)
+    num_classes = 63 #Get from the selected dataset, do not hardcode
+    # torch.multiprocessing.set_start_method('spawn')
+    train_data, test_data, train_indices, test_indices, splitter = ls.learning_to_split(dataset, model={'name': 'esm_transformer', 'args': {'nheads': 8, 'num_layers': 6, 'max_len': 200}}, 
+                                                                                        metric='accuracy', return_order=['train_data', 'test_data', 'train_indices', 'test_indices', 'splitter'],
+                                                                                        batch_size=20, num_workers=0, num_batches = 1050, patience=5, num_classes=num_classes) # TODO: Fix torch multiprocessing error for num_workers
