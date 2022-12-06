@@ -220,14 +220,15 @@ def get_data(fasta_file):
             torch.cuda.empty_cache()
 
 def return_from_dataset(dataset, classes):
-  return [dataset.loc[dataset['family_accession'].isin(classes)].reset_index(), classes]
+    # for i in range(1, len(classes)):
+    #     formatted_name = all_datasets['sequence_name'].split('/')[0] + '-' + all_datasets['sequence_name'].split('/')[1]
+    #     dataset.loc[dataset['sequence_name'][formatted_name]]
+  return [dataset.loc[dataset['sequence_name'].isin(classes)].reset_index(), classes]
 
 if __name__ == "__main__":
     dataset_folder = "../data/results"
     protein_len = 200
     # get_data('selected_fams.fasta')
-    toy_dataset = pd.read_csv('../data/2_class.csv')
-    classes = pd.unique(toy_dataset['family_accession'])
 
     full_data_temp = []
     for name_sub_folder in ["train", "dev", "test"]:
@@ -237,14 +238,24 @@ if __name__ == "__main__":
         full_data_temp.append(pd.concat(full_data_temp))
     all_datasets = pd.concat([full_data_temp[0], full_data_temp[1], full_data_temp[2]])
     del full_data_temp
-
-    sel_fams = np.load('../data/selected_fams.npy') 
-    sel_dataset, _ = return_from_dataset(all_datasets, sel_fams)
+    classes = pd.unique(all_datasets['family_accession'])
+    selfam_fasta = FastaBatchedDataset.from_file('./selected_fams.fasta')
+    print(selfam_fasta.sequence_labels)
+    # sel_fams = np.load('../data/selected_fams.npy') 
+    # print(np.shape(sel_fams))
+    # print(sel_fams)
+    protien_labels = set()
+    for s in selfam_fasta.sequence_labels:
+        protien_labels.add(s.split('-')[0] + '/' + s.split('-')[1] + '-' + s.split('-')[2])
+    
+    sel_dataset, _ = return_from_dataset(all_datasets, protien_labels)
+    print(sel_dataset)
     device = 'cuda'
+    if False:
 
-    dataset = ESMFnDataset(sel_dataset, sel_fams, dataset_folder, device = device)
-    num_classes = 63 #Get from the selected dataset, do not hardcode
-    # torch.multiprocessing.set_start_method('spawn')
-    train_data, test_data, train_indices, test_indices, splitter = ls.learning_to_split(dataset, model={'name': 'esm_transformer', 'args': {'nheads': 8, 'num_layers': 6, 'max_len': 200}}, 
-                                                                                        metric='accuracy', return_order=['train_data', 'test_data', 'train_indices', 'test_indices', 'splitter'],
-                                                                                        batch_size=20, num_workers=0, num_batches = 1050, patience=5, num_classes=num_classes) # TODO: Fix torch multiprocessing error for num_workers
+        dataset = ESMFnDataset(sel_dataset, sel_fams, dataset_folder, device = device)
+        num_classes = len(dataset.classes) #Get from the selected dataset, do not hardcode
+        # torch.multiprocessing.set_start_method('spawn')
+        train_data, test_data, train_indices, test_indices, splitter = ls.learning_to_split(dataset, model={'name': 'esm_transformer', 'args': {'nheads': 2, 'num_layers': 2, 'max_len': 200}}, 
+                                                                                            metric='accuracy', return_order=['train_data', 'test_data', 'train_indices', 'test_indices', 'splitter'],
+                                                                                            batch_size=100, num_workers=0, num_batches = 14000, patience=2, num_classes=num_classes) # TODO: Fix torch multiprocessing error for num_workers
